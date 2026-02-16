@@ -1,0 +1,8 @@
+crewai[tools]
+langchain
+pydantic
+python-dotenv
+requests
+beautifulsoup4
+pillow
+customtkinter
