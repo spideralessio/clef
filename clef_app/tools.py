@@ -275,21 +275,78 @@ class RelatedArticleReadTool(BaseTool):
 
         return f"File not found: {content_path} (and smart recovery failed)"
 
+class ImageDownloaderSchema(BaseModel):
+    image_url: str = Field(..., description="The URL of the image to download. It must be a valid http or https URL.")
+
 class ImageDownloaderTool(BaseTool):
     name: str = "Image Downloader"
     description: str = "Downloads an image from a URL and saves it into a specified folder."
+    args_schema: Type[BaseModel] = ImageDownloaderSchema
     download_folder: str = "images"
 
     def _run(self, image_url: str) -> str:
+        import json
+        import re
+        import os
+        import requests
+        from datetime import datetime
+
+        # Debug logging - Save input
         try:
             os.makedirs(self.download_folder, exist_ok=True)
-            response = requests.get(image_url, timeout=10)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            debug_filename = f"debug_dalle_{timestamp}.txt"
+            debug_path = os.path.join(self.download_folder, debug_filename)
+        
+            with open(debug_path, "w", encoding="utf-8") as f:
+                f.write(f"Raw Input: {image_url}\n")
+        except:
+            pass # Failsafe
+
+        url_to_download = image_url
+        
+        # 1. Try to clean if JSON
+        try:
+             # Check if it looks like JSON structure
+             if isinstance(image_url, str) and (image_url.strip().startswith('{') or image_url.strip().startswith('[')):
+                  data = json.loads(image_url)
+                  if isinstance(data, dict):
+                       if 'url' in data: url_to_download = data['url']
+                       elif 'image_url' in data: url_to_download = data['image_url']
+                  elif isinstance(data, list) and len(data) > 0:
+                       # Heuristic: first item might be url or dict with url
+                       if isinstance(data[0], str): url_to_download = data[0]
+                       elif isinstance(data[0], dict): url_to_download = data[0].get('url', url_to_download)
+                  
+                  with open(debug_path, "a", encoding="utf-8") as f:
+                      f.write(f"Parsed JSON, effective URL: {url_to_download}\n")
+        except Exception as e:
+             with open(debug_path, "a", encoding="utf-8") as f:
+                  f.write(f"JSON Parsing Error: {e}\n")
+
+        # 2. Try to clean if Markdown or wrapped text
+        # If it doesn't start with http, or has spaces
+        if not url_to_download.strip().startswith('http') or ' ' in url_to_download.strip():
+             match = re.search(r'(https?://[^\s\)\"\'\]]+)', url_to_download)
+             if match:
+                 url_to_download = match.group(1)
+                 with open(debug_path, "a", encoding="utf-8") as f:
+                      f.write(f"Extracted URL from text: {url_to_download}\n")
+
+        # Handle Local File Path if valid
+        if os.path.exists(url_to_download.strip()):
+             local_path = url_to_download.strip()
+             # Optionally copy it to the download folder or just return success
+             return f"Image already available locally at: {local_path}"
+
+        try:
+            response = requests.get(url_to_download, timeout=15)
             response.raise_for_status()
             
             # Extract filename or generate one
-            filename = os.path.basename(image_url.split("?")[0])
-            if not filename or len(filename) > 50:
-                 filename = "generated_image.jpg"
+            filename = os.path.basename(url_to_download.split("?")[0])
+            if not filename or len(filename) > 50 or '.' not in filename:
+                 filename = f"generated_image_{timestamp}.png"
                  
             file_path = os.path.join(self.download_folder, filename)
             
@@ -304,4 +361,93 @@ class ImageDownloaderTool(BaseTool):
                 f.write(response.content)
             return f"Image saved to: {file_path}"
         except Exception as e:
+            with open(debug_path, "a", encoding="utf-8") as f:
+                 f.write(f"Download Error: {e}\n")
             return f"Failed to download image: {e}"
+
+class CustomDallEToolSchema(BaseModel):
+    prompt: str = Field(..., description="The description of the image to generate.")
+
+class CustomDallETool(BaseTool):
+    name: str = "Generate Image"
+    description: str = "Generates an image using OpenAI's DALL-E model. Returns a JSON string with the image URL."
+    args_schema: Type[BaseModel] = CustomDallEToolSchema
+    model: str = "gpt-image-1.5"
+    size: str = "1024x1024"
+    quality: str = "high"
+
+    def _run(self, prompt: str) -> str:
+        log_path = "unknown_log_path"
+        try:
+            from openai import OpenAI
+            from datetime import datetime
+            import json
+            import os
+            
+            # Ensure key is present
+            if not os.environ.get("OPENAI_API_KEY"):
+                from clef_app.config import ConfigManager
+                config = ConfigManager()
+                api_keys = config.get("api_keys", {})
+                if api_keys.get("openai_api_key"):
+                     os.environ["OPENAI_API_KEY"] = api_keys["openai_api_key"]
+            
+            client = OpenAI() 
+            
+            response = client.images.generate(
+                model=self.model,
+                prompt=prompt,
+                size=self.size,
+                quality=self.quality,
+                n=1,
+            )
+            
+            # Debug log - Save raw response
+            try:
+                os.makedirs("images", exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                log_path = f"images/dalle_raw_{ts}.json"
+                with open(log_path, "w") as f:
+                    try:
+                        f.write(response.model_dump_json(indent=2))
+                    except:
+                        f.write(str(response))
+            except Exception as log_err:
+                 print(f"Log error: {log_err}")
+
+            item = response.data[0]
+            image_url = getattr(item, 'url', None)
+            b64 = getattr(item, 'b64_json', None)
+            revised_prompt = getattr(item, 'revised_prompt', None)
+            
+            # If we get base64 instead of URL, save it immediately to avoid token overflow
+            if not image_url and b64:
+                 try:
+                     import base64 as b64lib
+                     image_data = b64lib.b64decode(b64)
+                     # Use the timestamp from earlier or generate a new one
+                     ts_img = datetime.now().strftime("%Y%m%d_%H%M%S")
+                     img_filename = f"generated_{ts_img}.png"
+                     img_path = os.path.join(os.getcwd(), "images", img_filename)
+                     
+                     os.makedirs("images", exist_ok=True)
+                     with open(img_path, "wb") as img_f:
+                         img_f.write(image_data)
+                     
+                     # Return the local path as the "url"
+                     image_url = img_path
+                 except Exception as save_err:
+                     return f"Error saving base64 image: {save_err}"
+            
+            if not image_url:
+                 return f"Error: No image URL or Base64 data returned. See {log_path} for raw response."
+
+            result = {
+                "image_url": image_url,
+                "revised_prompt": revised_prompt,
+                "note": "Image was saved locally because the model returned base64 data."
+            }
+            return json.dumps(result)
+            
+        except Exception as e:
+            return f"Error generating image: {str(e)}"

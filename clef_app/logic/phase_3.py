@@ -3,11 +3,11 @@ import json
 import logging
 from typing import Optional, Dict, List
 from crewai import Agent, Task, Crew, Process
-from crewai_tools import DallETool
 from clef_app.config import ConfigManager
 from clef_app.llm_provider import get_llm
 from clef_app.models import Proposal, ArticleDraft
-from clef_app.tools import RelatedArticleReadTool, ImageDownloaderTool
+from clef_app.html_utils import create_article_html
+from clef_app.tools import RelatedArticleReadTool, ImageDownloaderTool, CustomDallETool
 from clef_app.database import DatabaseManager
 
 class Phase3Runner:
@@ -24,7 +24,7 @@ class Phase3Runner:
         
         # Tools
         read_tool = RelatedArticleReadTool()
-        dalle_tool = DallETool(model="dall-e-3", size="1024x1024", quality="standard", n=1)
+        dalle_tool = CustomDallETool(model="gpt-image-1.5", quality="high")
         image_dl_tool = ImageDownloaderTool()
         
         # Agents
@@ -111,18 +111,17 @@ class Phase3Runner:
             Output Language: {language}
             Capture the tone and style appropriate for the audience.
             """,
-            expected_output="Full markdown text of the article.",
+            expected_output="Full HTML text of the article.",
             agent=writer_agent,
             context=[task_plan]
         )
         
         task_social = Task(
             description=f"""
-            Based on the written article, create:
-            1. Two social media posts (e.g. for Instagram/X).
-            2. An image generation prompt describing a visual for the header.
+            Based on the written article, create two social media posts (e.g. for Instagram/X).
+            Each post should capture the essence of the article for its platform.
             """,
-            expected_output="Social posts and image prompt.",
+            expected_output="Two social media posts.",
             agent=social_image_agent,
             context=[task_write]
         )
@@ -132,6 +131,9 @@ class Phase3Runner:
             Review the article, plan, and social content.
             Output the FINAL result as a structured JSON object matching the ArticleDraft model.
             Must include: final_title, subtitle, slug, category, target_audience, word_count_estimate, final_content (the full text), summary, social_posts, image_prompt.
+            
+            NOTE: For image_prompt, you can provide a brief placeholder or simple description. 
+            The Designer Agent will create the actual detailed image_prompt that respects design guidelines.
             """,
             expected_output="Final structured JSON for the article.",
             agent=editor_agent,
@@ -140,13 +142,28 @@ class Phase3Runner:
         )
         
         # Design Task - runs after edit to use the image prompt
+        design_guidelines = prompts.get("design_image", "You are an AI image generator for an independent music magazine.")
         task_design = Task(
             description=f"""
-            Using the 'image_prompt' from the Editor's output:
-            1. Generate an image using DALL-E.
-            2. Download the image using ImageDownloader (it returns the path).
+            You are the ONLY agent responsible for creating the image_prompt that respects design constraints.
             
-            Return the local file path of the downloaded image.
+            DESIGN GUIDELINES (YOU MUST FOLLOW THESE):
+            {design_guidelines}
+            
+            YOUR TASK:
+            1. Read the article content from the Editor's output (context)
+            2. Create an image_prompt that:
+               - Captures the essence and key themes of the article
+               - RESPECTS and INCORPORATES the design guidelines above
+               - Is detailed and artistic
+               - Avoids anything prohibited by the design guidelines
+            3. Call the DALL-E tool with YOUR created image_prompt
+            4. Parse the JSON response to extract the image URL
+            5. Download the image using the ImageDownloader tool
+            6. Return the file path of the downloaded image
+            
+            CRITICAL: The image_prompt you create MUST reflect both the article content AND your design guidelines.
+            This is your responsibility as the Designer Agent.
             """,
             expected_output="The file path of the downloaded image.",
             agent=designer_agent,
@@ -188,19 +205,44 @@ class Phase3Runner:
 
     def generate_image(self, prompt: str, filename_prefix: str, output_dir: str = "images") -> Optional[str]:
         # Standalone image generation (Extras tab)
-        dalle_tool = DallETool(model="dall-e-3", size="1024x1024", quality="standard", n=1)
-        image_dl_tool = ImageDownloaderTool(download_folder=output_dir)
+        prompts = self.config.get("prompts", {})
+        design_guidelines = prompts.get("design_image", "You are an AI image generator for an independent music magazine.")
+
+        dalle_tool = CustomDallETool(model="gpt-image-1.5", quality="high")
+        image_dl_tool = ImageDownloaderTool()
+        image_dl_tool.download_folder = output_dir  # Set the download folder
         
         agent = Agent(
             role="Designer",
-            goal="Generate image.",
-            backstory="You generate images.",
+            goal="Generate a high-quality header image for a music article.",
+            backstory=design_guidelines,
             llm=get_llm(temperature=0.7),
             tools=[dalle_tool, image_dl_tool]
         )
         
         task = Task(
-            description=f"Generate image for: {prompt}. Download it.",
+            description=f"""
+            You are the Designer Agent responsible for creating images that respect design constraints.
+            
+            DESIGN GUIDELINES (YOU MUST FOLLOW THESE):
+            {design_guidelines}
+            
+            USER REQUEST: "{prompt}"
+            
+            YOUR TASK:
+            1. Create an image_prompt that:
+               - Captures the essence of the user's request
+               - RESPECTS and INCORPORATES the design guidelines above
+               - Is detailed and artistic
+               - Avoids anything prohibited by the design guidelines
+            2. Call the DALL-E tool with YOUR created image_prompt
+            3. Parse the JSON response to extract the image URL
+            4. Download the image using the ImageDownloader tool
+            5. Return the file path of the downloaded image
+            
+            CRITICAL: The image_prompt you create MUST reflect BOTH the user request AND your design guidelines.
+            Do not ignore the design guidelines.
+            """,
             expected_output="Path to image.",
             agent=agent
         )
@@ -214,13 +256,15 @@ class Phase3Runner:
          path = os.path.join(base_dir, slug)
          os.makedirs(path, exist_ok=True)
          
-         # MD File
-         with open(os.path.join(path, "article.md"), "w", encoding="utf-8") as f:
-             f.write(f"# {draft.final_title}\n\n")
-             f.write(f"## {draft.subtitle}\n\n")
-             if draft.image_path:
-                 f.write(f"![Header Image]({draft.image_path})\n\n")
-             f.write(f"{draft.final_content}")
+         # HTML File
+         html_content = create_article_html(
+             title=draft.final_title,
+             subtitle=draft.subtitle,
+             content=draft.final_content,
+             image_path=draft.image_path
+         )
+         with open(os.path.join(path, "article.html"), "w", encoding="utf-8") as f:
+             f.write(html_content)
              
          # Social Posts
          social_dir = os.path.join(path, "social")

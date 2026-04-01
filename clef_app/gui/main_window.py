@@ -12,6 +12,7 @@ from clef_app.logic.phase_2 import Phase2Runner
 from clef_app.logic.phase_3 import Phase3Runner
 from clef_app.database import DatabaseManager
 from clef_app.models import Proposal
+from clef_app.html_utils import create_article_html
 
 class MainApp(tk.Tk):
     def __init__(self):
@@ -840,13 +841,19 @@ class MainApp(tk.Tk):
         article_dir = os.path.join(dest_folder, safe_slug)
         os.makedirs(article_dir, exist_ok=True)
         
-        # Save Markdown
-        md_file = "article.md"
-        md_path = os.path.join(article_dir, md_file)
-        with open(md_path, 'w', encoding='utf-8') as f:
-            f.write(f"# {draft.final_title}\n\n{draft.final_content}")
+        # Save HTML
+        html_content = create_article_html(
+            title=draft.final_title,
+            subtitle=draft.subtitle,
+            content=draft.final_content,
+            image_path=draft.image_path if hasattr(draft, 'image_path') else None
+        )
+        html_file = "article.html"
+        html_path = os.path.join(article_dir, html_file)
+        with open(html_path, 'w', encoding='utf-8') as f:
+            f.write(html_content)
             
-        self.log_phase3.insert('end', f"Saved markdown: {md_path}\n")
+        self.log_phase3.insert('end', f"Saved HTML: {html_path}\n")
 
         # Save Social Posts
         social_dir = os.path.join(article_dir, "social")
@@ -1014,17 +1021,42 @@ class MainApp(tk.Tk):
         def task():
             runner = Phase3Runner()
             # First, we need a prompt. Let's use LLM to extract prompt from text
-            # Or just assume content is the prompt? 
-            # "generate images for articles that were already written" implies analyzing the text.
+            # and incorporate design guidelines from config
             
-            # Simple prompt extraction using LLM
             from crewai import Agent, Task, Crew
             from clef_app.llm_provider import get_llm
+            from clef_app.config import ConfigManager
             
             try:
+                config = ConfigManager()
+                design_guidelines = config.get("prompts", {}).get("design_image", "You are an AI image generator for an independent music magazine.")
+                
                 llm = get_llm()
-                agent = Agent(role="Prompter", goal="Create image prompt", backstory="...", llm=llm)
-                task_p = Task(description=f"Create a DALL-E prompt for this text: {content[:1000]}...", expected_output="A prompt", agent=agent)
+                agent = Agent(
+                    role="Image Prompt Creator",
+                    goal="Create image prompts that respect design guidelines",
+                    backstory=design_guidelines,
+                    llm=llm
+                )
+                task_p = Task(
+                    description=f"""
+                    Analyze this article content and create a DALL-E image prompt.
+                    
+                    DESIGN GUIDELINES (YOU MUST FOLLOW THESE):
+                    {design_guidelines}
+                    
+                    ARTICLE CONTENT:
+                    {content[:1500]}
+                    
+                    Create an image prompt that:
+                    - Captures the essence and key themes of the article
+                    - RESPECTS and INCORPORATES the design guidelines above
+                    - Is detailed and artistic
+                    - Avoids anything prohibited by the design guidelines
+                    """,
+                    expected_output="A detailed image prompt that respects design guidelines",
+                    agent=agent
+                )
                 crew = Crew(agents=[agent], tasks=[task_p])
                 prompt_res = str(crew.kickoff())
                 

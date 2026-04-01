@@ -83,7 +83,7 @@ CLEF is an AI-powered desktop application designed to streamline the editorial p
     *   `gui/`: Tkinter interface.
     *   `logic/`: Business logic for each phase (CrewAI agents).
 *   `articles/`: Raw scraped data warehouse.
-*   `generated_articles/`: Final outputs (Markdown, JSON, Images).
+*   `generated_articles/`: Final outputs (HTML, JSON, Images).
 *   `logs/`: Application execution logs.
 *   `clef.db`: SQLite database storing state.
 *   `config.json`: User configuration (ignored by git).

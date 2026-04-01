@@ -8,6 +8,7 @@ from crewai.tools import BaseTool
 from crewai_tools import DallETool
 from dotenv import load_dotenv
 import requests
+import markdown2
 
 load_dotenv()
 
@@ -92,9 +93,49 @@ class RelatedArticleReadTool(BaseTool):
             return f"ERROR: could not read article at {content_path}: {e}"
 
 
+def create_article_html(title: str, subtitle: str, content: str, image_path: str = None) -> str:
+    """Create plain HTML article without any styling.
+    
+    Args:
+        title: Article title
+        subtitle: Article subtitle
+        content: Article content (can be plain text or markdown)
+        image_path: Optional path to header image
+        
+    Returns:
+        Plain HTML document as string
+    """
+    # Convert markdown content to HTML
+    try:
+        html_content = markdown2.markdown(content, extras=['tables', 'fenced-code-blocks'])
+    except:
+        html_content = f"<p>{content.replace(chr(10), '</p><p>')}</p>"
+    
+    # Build the image HTML if provided
+    image_html = ""
+    if image_path:
+        image_html = f'<img src="{image_path}" alt="Article header image">\n'
+    
+    # Create plain HTML document with no styling
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<title>{title}</title>
+</head>
+<body>
+<h1>{title}</h1>
+<h2>{subtitle}</h2>
+{image_html}
+{html_content}
+</body>
+</html>"""
+    
+    return html
+
+
 class SaveArticlesTool(BaseTool):
     name: str = "Save Articles Tool"
-    description: str = "Saves generated article drafts to a JSON file and individual .md files."
+    description: str = "Saves generated article drafts to a JSON file and individual .html files."
 
     def _run(self, articles_json: str, filename: Optional[str] = None) -> str:
         if filename is None:
@@ -122,11 +163,15 @@ class SaveArticlesTool(BaseTool):
 
             for art in output_data["articles"]:
                 slug = art.get("slug", "untitled")
-                md_path = os.path.join(output_dir, f"{slug}.md")
-                with open(md_path, "w", encoding="utf-8") as f_md:
-                    f_md.write(f"# {art.get('final_title','Untitled')}\n\n")
-                    f_md.write(f"## {art.get('subtitle','')}\n\n")
-                    f_md.write(art.get("final_content", ""))
+                html_path = os.path.join(output_dir, f"{slug}.html")
+                html_content = create_article_html(
+                    title=art.get('final_title', 'Untitled'),
+                    subtitle=art.get('subtitle', ''),
+                    content=art.get("final_content", ""),
+                    image_path=art.get("image_path")
+                )
+                with open(html_path, "w", encoding="utf-8") as f_html:
+                    f_html.write(html_content)
 
             return f"Successfully saved {output_data['total_articles']} articles to {filepath}"
         except Exception as e:
@@ -160,9 +205,9 @@ class ImageDownloaderTool(BaseTool):
 related_read_tool = RelatedArticleReadTool()
 save_articles_tool = SaveArticlesTool()
 dalle_tool = DallETool(
-    model="dall-e-3",
+    model="gpt-image-1.5",
     size="1024x1024",
-    quality="standard",
+    quality="high",
     n=1,
 )
 image_downloader_tool = ImageDownloaderTool()
@@ -296,13 +341,17 @@ def save_single_article_draft(article: Dict, base_dir: str = "drafts") -> str:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
     slug = article.get("slug", "untitled")
-    md_path = os.path.join(base_dir, f"{slug}.md")
-    with open(md_path, "w", encoding="utf-8") as f_md:
-        f_md.write(f"# {article.get('final_title', 'Untitled')}\n\n")
-        f_md.write(f"## {article.get('subtitle', '')}\n\n")
-        f_md.write(article.get("final_content", ""))
+    html_path = os.path.join(base_dir, f"{slug}.html")
+    html_content = create_article_html(
+        title=article.get('final_title', 'Untitled'),
+        subtitle=article.get('subtitle', ''),
+        content=article.get("final_content", ""),
+        image_path=article.get("image_path")
+    )
+    with open(html_path, "w", encoding="utf-8") as f_html:
+        f_html.write(html_content)
 
-    return f"Saved draft markdown to {md_path} and updated {json_path}"
+    return f"Saved article HTML to {html_path} and updated {json_path}"
 
 
 # ==========================
