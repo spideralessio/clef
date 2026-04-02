@@ -225,6 +225,12 @@ class DatabaseManager:
         conn.commit()
         conn.close()
 
+    def delete_proposal(self, proposal_id: int):
+        conn = self.get_connection()
+        conn.execute("DELETE FROM proposals WHERE id = ?", (proposal_id,))
+        conn.commit()
+        conn.close()
+
     # --- Generated Articles ---
     def add_generated_article(self, proposal_id: int, title: str, slug: str, path: str, language: str):
         conn = self.get_connection()

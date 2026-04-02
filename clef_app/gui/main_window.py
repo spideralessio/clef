@@ -731,14 +731,21 @@ class MainApp(tk.Tk):
         self.pending_proposals_list = tk.Listbox(frame, height=8, font=('Segoe UI', 10), activestyle='none', selectbackground='#007acc', borderwidth=1, relief="solid")
         self.pending_proposals_list.pack(fill='x', padx=10, pady=5)
         
+        # Buttons frame for Write and Remove
+        buttons_frame = ttk.Frame(frame)
+        buttons_frame.pack(pady=5)
+        
+        btn_write = ttk.Button(buttons_frame, text="Write Article", command=self.run_phase3)
+        btn_write.pack(side='left', padx=5)
+        
+        btn_remove = ttk.Button(buttons_frame, text="Remove Proposal", command=self.remove_proposal)
+        btn_remove.pack(side='left', padx=5)
+        
         lbl_lang = ttk.Label(frame, text="Language:")
         lbl_lang.pack()
         self.lang_var = tk.StringVar(value="italian")
         entry_lang = ttk.Entry(frame, textvariable=self.lang_var)
         entry_lang.pack()
-        
-        btn_write = ttk.Button(frame, text="Write Article", command=self.run_phase3)
-        btn_write.pack(pady=10)
         
         self.log_phase3 = tk.Text(frame, height=15, font=('Consolas', 9), bg="#f8f9fa", padx=5, pady=5, relief="solid", borderwidth=1)
         self.log_phase3.pack(fill='both', expand=True, padx=10, pady=5)
@@ -987,6 +994,32 @@ class MainApp(tk.Tk):
         except Exception as e:
             logger.error(f"Error opening folder: {e}")
             self.log_phase3.insert('end', f"Error opening folder: {e}\n")
+
+    def remove_proposal(self):
+        sel = self.pending_proposals_list.curselection()
+        if not sel:
+            messagebox.showwarning("No Selection", "Please select a proposal to remove.")
+            return
+        
+        idx = sel[0]
+        proposal_record = self.db_proposals[idx]
+        proposal_id = proposal_record['id']
+        proposal_title = proposal_record['title']
+        
+        # Confirm deletion
+        if not messagebox.askyesno("Confirm Deletion", f"Are you sure you want to remove the proposal:\n\n'{proposal_title}'?"):
+            return
+        
+        try:
+            db = DatabaseManager()
+            db.delete_proposal(proposal_id)
+            self.log_phase3.insert('end', f"Proposal '{proposal_title}' removed successfully.\n")
+            # Refresh the list
+            self.load_pending_proposals()
+        except Exception as e:
+            logger = logging.getLogger("clef_app.gui.phase3")
+            logger.error(f"Error deleting proposal {proposal_id}: {e}")
+            messagebox.showerror("Error", f"Failed to remove proposal: {e}")
 
     def create_extras_tab(self):
         frame = ttk.Frame(self.notebook)
